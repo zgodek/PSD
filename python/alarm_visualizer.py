@@ -12,17 +12,17 @@ Z_SCORE_THRESHOLD = 2.5
 alarm_consumer = KafkaConsumer(
     'Alarm',
     bootstrap_servers=['localhost:29092'],
-    auto_offset_reset='earliest',
+    auto_offset_reset='latest',
     value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-    group_id='temperature_visualization_alarm2'
+    group_id='temperature_visualization_alarm'
 )
 
 stats_consumer = KafkaConsumer(
     'Statystyki',
     bootstrap_servers=['localhost:29092'],
-    auto_offset_reset='earliest',
+    auto_offset_reset='latest',
     value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-    group_id='temperature_visualization_stats2'
+    group_id='temperature_visualization_stats'
 )
 
 # Dane do wizualizacji
