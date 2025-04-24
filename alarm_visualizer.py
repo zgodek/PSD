@@ -7,36 +7,31 @@ from datetime import datetime
 import threading
 import collections
 
-# Próg Z-score dla wykrywania anomalii (taki sam jak w temperature_processor.py)
 Z_SCORE_THRESHOLD = 2.5
 
-# Konfiguracja konsumentów Kafka
 alarm_consumer = KafkaConsumer(
     'Alarm',
     bootstrap_servers=['localhost:29092'],
     auto_offset_reset='earliest',
     value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-    group_id='temperature_visualization_alarm'
+    group_id='temperature_visualization_alarm2'
 )
 
-temperature_consumer = KafkaConsumer(
-    'Temperatura',
+stats_consumer = KafkaConsumer(
+    'Statystyki',
     bootstrap_servers=['localhost:29092'],
-    auto_offset_reset='latest',
+    auto_offset_reset='earliest',
     value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-    group_id='temperature_visualization_temp'
+    group_id='temperature_visualization_stats2'
 )
 
 # Dane do wizualizacji
-alarm_data = collections.defaultdict(list)  # id_termometru -> [(czas, temperatura, srednia, z_score), ...]
-temperature_data = collections.defaultdict(list)  # id_termometru -> [(czas, temperatura, srednia_bazowa), ...]
-max_points = 1000  # Maksymalna liczba punktów do wyświetlenia
-
-# Blokada dla bezpiecznego dostępu do danych z wielu wątków
+alarm_data = collections.defaultdict(list)
+stats_data = collections.defaultdict(list) 
+max_points = 1200  
 data_lock = threading.Lock()
 
 
-# Funkcja do odbierania danych alarmów z Kafki w osobnym wątku
 def consume_alarm_data():
     for message in alarm_consumer:
         data = message.value
@@ -45,18 +40,14 @@ def consume_alarm_data():
         mean_temp = data.get('srednia_temperatura', 0)
         z_score = data.get('z_score', 0)
         
-        # Konwersja czasu z formatu ISO do obiektu datetime
         try:
-            # Używamy czasu pomiaru zamiast czasu alarmu dla spójności z wykresem temperatur
             timestamp = datetime.fromisoformat(data['czas_pomiaru'].replace('Z', '+00:00'))
-        except:
-            timestamp = datetime.now()  # Fallback jeśli format czasu jest nieprawidłowy
+        except Exception:
+            timestamp = datetime.now()  
         
         with data_lock:
-            # Dodaj nowy punkt danych
             alarm_data[thermometer_id].append((timestamp, temperature, mean_temp, z_score))
             
-            # Ogranicz liczbę punktów
             if len(alarm_data[thermometer_id]) > max_points:
                 alarm_data[thermometer_id] = alarm_data[thermometer_id][-max_points:]
         
@@ -64,45 +55,40 @@ def consume_alarm_data():
               f"Średnia: {mean_temp:.2f}°C, Z-score: {z_score:.2f}")
 
 
-# Funkcja do odbierania danych temperatur z Kafki w osobnym wątku
-def consume_temperature_data():
-    for message in temperature_consumer:
+def consume_stats_data():
+    for message in stats_consumer:
         data = message.value
         thermometer_id = data['id_termometru']
         temperature = data['temperatura']
-        base_mean = data.get('srednia_bazowa', 0)  # Średnia bazowa z trendem
+        mean_temp = data.get('srednia_temperatura', 0)
+        z_score = data.get('z_score', 0)
         
-        # Konwersja czasu z formatu ISO do obiektu datetime
         try:
             timestamp = datetime.fromisoformat(data['czas_pomiaru'].replace('Z', '+00:00'))
-        except:
-            timestamp = datetime.now()  # Fallback jeśli format czasu jest nieprawidłowy
+        except Exception:
+            timestamp = datetime.now()  
         
         with data_lock:
-            # Dodaj nowy punkt danych
-            temperature_data[thermometer_id].append((timestamp, temperature, base_mean))
+            stats_data[thermometer_id].append((timestamp, temperature, mean_temp, z_score))
             
-            # Ogranicz liczbę punktów
-            if len(temperature_data[thermometer_id]) > max_points:
-                temperature_data[thermometer_id] = temperature_data[thermometer_id][-max_points:]
+            if len(stats_data[thermometer_id]) > max_points:
+                stats_data[thermometer_id] = stats_data[thermometer_id][-max_points:]
 
 
-# Inicjalizacja wykresu
 fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 15))
-colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']  # Kolory dla różnych termometrów
+colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']  
+
 
 def update_plot(frame):
     with data_lock:
-        # Wyczyść wykresy
         ax1.clear()
         ax2.clear()
         ax3.clear()
         
-        # Ustal wspólny zakres czasu dla wszystkich wykresów
         all_times = []
-        for data_points in temperature_data.values():
+        for data_points in stats_data.values():
             if data_points:
-                times, _, _ = zip(*data_points)
+                times, _, _, _ = zip(*data_points)
                 all_times.extend(times)
         
         for data_points in alarm_data.values():
@@ -117,17 +103,18 @@ def update_plot(frame):
         else:
             time_range = None
         
-        # Rysuj dane temperatur dla każdego termometru
-        for i, (thermometer_id, data_points) in enumerate(temperature_data.items()):
-            if data_points:
-                times, temps, base_means = zip(*data_points)
-                color = colors[i % len(colors)]
-                
-                # Wykres temperatur
-                ax1.plot(times, temps, 'o', color=color, label=f'Termometr {thermometer_id}')
-                ax1.plot(times, base_means, '--', color=color, alpha=0.5, label=f'Trend {thermometer_id}')
+        all_thermometer_ids = set(list(stats_data.keys()) + list(alarm_data.keys()))
+        color_map = {therm_id: colors[i % len(colors)] for i, therm_id in enumerate(sorted(all_thermometer_ids))}
         
-        ax1.set_title('Aktualne temperatury z trendem')
+        for thermometer_id, color in color_map.items():
+            if thermometer_id in stats_data and stats_data[thermometer_id]:
+                data_points = stats_data[thermometer_id]
+                times, temps, means, z_scores = zip(*data_points)
+                
+                ax1.plot(times, temps, 'o-', color=color, markersize=3, linewidth=1, label=f'Termometr {thermometer_id}')
+                ax1.plot(times, means, '--', color=color, alpha=0.7, linewidth=2, label=f'Średnia {thermometer_id}')
+        
+        ax1.set_title('Aktualne temperatury ze średnią ruchomą')
         ax1.set_xlabel('Czas')
         ax1.set_ylabel('Temperatura (°C)')
         ax1.grid(True)
@@ -135,18 +122,13 @@ def update_plot(frame):
         if time_range:
             ax1.set_xlim(time_range)
         
-        # Rysuj dane alarmów dla każdego termometru
-        for i, (thermometer_id, data_points) in enumerate(alarm_data.items()):
-            if data_points:
+        for thermometer_id, color in color_map.items():
+            if thermometer_id in alarm_data and alarm_data[thermometer_id]:
+                data_points = alarm_data[thermometer_id]
                 times, temps, means, z_scores = zip(*data_points)
-                color = colors[i % len(colors)]
-                
-                # Wykres temperatur alarmowych
-                ax2.plot(times, temps, 'o', color=color, label=f'Alarm {thermometer_id}')
-                
-                # Wykres z-score
-                ax3.plot(times, z_scores, 'x-', color=color, label=f'Z-score {thermometer_id}')
-        
+                ax2.plot(times, temps, 'o', color=color, markersize=4, label=f'Alarm {thermometer_id}')
+                ax3.plot(times, z_scores, 'x', color=color, markersize=4, linewidth=1, label=f'Z-score {thermometer_id}')
+
         ax2.set_title('Alarmy temperaturowe')
         ax2.set_xlabel('Czas')
         ax2.set_ylabel('Temperatura (°C)')
@@ -166,25 +148,22 @@ def update_plot(frame):
     
     return []
 
-# Uruchom wątki konsumentów Kafka
+
 alarm_thread = threading.Thread(target=consume_alarm_data, daemon=True)
 alarm_thread.start()
 
-temperature_thread = threading.Thread(target=consume_temperature_data, daemon=True)
-temperature_thread.start()
+stats_thread = threading.Thread(target=consume_stats_data, daemon=True)
+stats_thread.start()
 
-# Uruchom animację wykresu
-ani = animation.FuncAnimation(fig, update_plot, interval=1000)  # Aktualizuj co 1 sekundę
+ani = animation.FuncAnimation(fig, update_plot, interval=1000)
 
-# Wyświetl wykres
 plt.tight_layout()
 
-# Zamknij konsumenta po zakończeniu
 try:
     plt.show()
 except KeyboardInterrupt:
     pass
 finally:
     alarm_consumer.close()
-    temperature_consumer.close()
+    stats_consumer.close()
     print("Visualizer shutdown complete")
