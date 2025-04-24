@@ -1,5 +1,5 @@
 #!/bin/bash
-PROCESSOR_FILE="temperature_processor.py"
+PROCESSOR_FILE="python/temperature_processor.py"
 
 if [ ! -f "$PROCESSOR_FILE" ]; then
     echo "Błąd: Plik $PROCESSOR_FILE nie istnieje!"

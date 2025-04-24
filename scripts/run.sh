@@ -16,11 +16,11 @@ if [ ! -f "./flink-usrlib/flink-sql-connector-kafka-1.17.2.jar" ]; then
 fi
 
 echo "Uruchamiam generator danych temperatury..."
-python3 temperature_generator.py &
+python3 python/temperature_generator.py &
 GENERATOR_PID=$!
 
 echo "Uruchamiam wizualizator alarmów..."
-python3 alarm_visualizer.py &
+python3 python/alarm_visualizer.py &
 VISUALIZER_PID=$!
 
 echo "Uruchamiam zadanie Flink..."

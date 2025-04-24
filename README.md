@@ -13,7 +13,7 @@ Ten projekt demonstruje integrację Apache Kafka i Apache Flink do przetwarzania
 1. Uruchom skrypt instalacyjny, aby zainstalować wymagane zależności:
 
 ```bash
-./setup.sh
+./scripts/setup.sh
 ```
 
 ## Zatrzymanie
