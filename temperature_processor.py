@@ -17,7 +17,7 @@ logger = logging.getLogger()
 
 # Parametry wykrywania anomalii
 Z_SCORE_THRESHOLD = 2.5  # Próg Z-score dla wykrywania anomalii
-WINDOW_SIZE = 10  # Liczba pomiarów do obliczania statystyk
+WINDOW_SIZE = 100  # Liczba pomiarów do obliczania statystyk
 
 # Słownik do przechowywania danych dla każdego termometru
 thermometer_data = {}

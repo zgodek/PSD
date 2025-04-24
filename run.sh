@@ -34,14 +34,15 @@ echo "Uruchamiam generator danych temperatury..."
 python3 temperature_generator.py &
 GENERATOR_PID=$!
 
-# Uruchom zadanie Flink
-echo "Uruchamiam zadanie Flink..."
-./submit_flink_job.sh
-
 # Uruchom wizualizator alarmów
 echo "Uruchamiam wizualizator alarmów..."
 python3 alarm_visualizer.py &
 VISUALIZER_PID=$!
+
+# Uruchom zadanie Flink
+echo "Uruchamiam zadanie Flink..."
+./submit_flink_job.sh
+
 
 echo "Wszystkie komponenty zostały uruchomione."
 echo "Kafka UI: http://localhost:8080"

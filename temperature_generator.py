@@ -2,6 +2,7 @@
 import json
 import random
 import time
+import math
 import numpy as np
 from datetime import datetime
 from kafka import KafkaProducer
@@ -26,13 +27,37 @@ THERMOMETER_PARAMS = {
     5: (15.0, 1.8)    # Termometr 5: średnia 15°C, odchylenie 1.8°C
 }
 
+# Parametry trendu temperatury
+TREND_PERIOD = 300  # Okres pełnego cyklu trendu w sekundach (5 minut)
+TREND_AMPLITUDE = {  # Amplituda trendu dla każdego termometru
+    1: 5.0,  # Termometr 1: ±5°C
+    2: 4.0,  # Termometr 2: ±4°C
+    3: 6.0,  # Termometr 3: ±6°C
+    4: 5.5,  # Termometr 4: ±5.5°C
+    5: 4.5   # Termometr 5: ±4.5°C
+}
+
 # Co jakiś czas generujemy anomalię
 ANOMALY_PROBABILITY = 0.05  # 5% szans na anomalię w każdym pomiarze
 
+# Licznik czasu dla trendu
+start_time = time.time()
 
-def generate_temperature(thermometer_id):
-    """Generuje temperaturę z rozkładu normalnego dla danego termometru"""
-    mean, std_dev = THERMOMETER_PARAMS[thermometer_id]
+def get_trend_value(thermometer_id, elapsed_time):
+    """Oblicza wartość trendu dla danego termometru w danym czasie"""
+    # Oblicz fazę sinusoidy (0-2π) na podstawie czasu
+    phase = (elapsed_time % TREND_PERIOD) / TREND_PERIOD * 2 * math.pi
+    # Oblicz wartość sinusoidy (-1 do 1) i przeskaluj przez amplitudę
+    trend = math.sin(phase) * TREND_AMPLITUDE[thermometer_id]
+    return trend
+
+def generate_temperature(thermometer_id, elapsed_time):
+    """Generuje temperaturę z rozkładu normalnego dla danego termometru z uwzględnieniem trendu"""
+    base_mean, std_dev = THERMOMETER_PARAMS[thermometer_id]
+    
+    # Dodaj trend do średniej temperatury
+    trend_value = get_trend_value(thermometer_id, elapsed_time)
+    current_mean = base_mean + trend_value
     
     # Sprawdź, czy generujemy anomalię
     if random.random() < ANOMALY_PROBABILITY:
@@ -40,34 +65,38 @@ def generate_temperature(thermometer_id):
         deviation_factor = random.uniform(3.0, 5.0)
         # Losowo wybierz kierunek odchylenia (dodatni lub ujemny)
         direction = 1 if random.random() > 0.5 else -1
-        temperature = mean + (direction * deviation_factor * std_dev)
-        print(f"ANOMALIA dla termometru {thermometer_id}: {temperature:.2f}°C")
+        temperature = current_mean + (direction * deviation_factor * std_dev)
+        print(f"ANOMALIA dla termometru {thermometer_id}: {temperature:.2f}°C (średnia: {current_mean:.2f}°C)")
     else:
         # Normalny pomiar z rozkładu normalnego
-        temperature = np.random.normal(mean, std_dev)
+        temperature = np.random.normal(current_mean, std_dev)
     
-    return round(temperature, 2)
+    return round(temperature, 2), round(current_mean, 2)
 
 
 def main():
-    print("Starting temperature data generator with normal distribution...")
+    print("Starting temperature data generator with trending normal distribution...")
+    start_time = time.time()
+    
     try:
         while True:
             current_time = datetime.now().isoformat()
+            elapsed_time = time.time() - start_time
             
             for thermometer_id in range(1, NUM_THERMOMETERS + 1):
-                temperature = generate_temperature(thermometer_id)
+                temperature, current_mean = generate_temperature(thermometer_id, elapsed_time)
                 
                 # Przygotuj dane
                 data = {
                     "id_termometru": thermometer_id,
                     "czas_pomiaru": current_time,
-                    "temperatura": temperature
+                    "temperatura": temperature,
+                    "srednia_bazowa": current_mean  # Dodajemy informację o aktualnej średniej bazowej (z trendem)
                 }
                 
                 # Wyślij dane do Kafki
                 producer.send('Temperatura', data)
-                print(f"Sent: Termometr {thermometer_id}, Temp: {temperature:.2f}°C")
+                print(f"Sent: Termometr {thermometer_id}, Temp: {temperature:.2f}°C, Trend Mean: {current_mean:.2f}°C")
             
             # Wyślij wszystkie dane
             producer.flush()
