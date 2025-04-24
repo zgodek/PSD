@@ -14,3 +14,14 @@ Ten projekt demonstruje integrację Apache Kafka i Apache Flink do przetwarzania
 
 ```bash
 ./setup.sh
+```
+
+## Zatrzymanie
+
+Powinno działać klasyczne ctrl + C ale czasem nie działa wtedy należy dodać sobie
+
+``` bash
+pkill -f "python.*temperature_generator.py" 
+```
+
+dalej w debugu

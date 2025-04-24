@@ -55,7 +55,6 @@ def generate_temperature(thermometer_id, elapsed_time):
         deviation_factor = random.uniform(3.0, 5.0)
         direction = 1 if random.random() > 0.5 else -1
         temperature = current_mean + (direction * deviation_factor * std_dev)
-        print(f"ANOMALIA dla termometru {thermometer_id}: {temperature:.2f}°C (średnia: {current_mean:.2f}°C)")
     else:
         temperature = np.random.normal(current_mean, std_dev)
     
@@ -80,9 +79,7 @@ def main():
                     "temperatura": temperature
                 }
                 
-                producer.send('Temperatura', data)
-                print(f"Sent: Termometr {thermometer_id}, Temp: {temperature:.2f}°C")
-            
+                producer.send('Temperatura', data)            
             producer.flush()
             
             time.sleep(INTERVAL_SEC)
