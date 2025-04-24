@@ -15,15 +15,6 @@ if [ ! -f "./flink-usrlib/flink-sql-connector-kafka-1.17.2.jar" ]; then
     ./setup.sh
 fi
 
-echo "Kopiowanie konektora Kafka do kontenera Flink..."
-docker cp ./flink-usrlib/flink-sql-connector-kafka-1.17.2.jar jobmanager:/opt/flink/lib/
-
-echo "Konfiguracja środowiska Python w kontenerze Flink..."
-docker exec -it jobmanager apt-get update
-docker exec -it jobmanager apt-get install -y python3 python3-pip
-docker exec -it jobmanager pip3 install numpy kafka-python apache-flink==1.17.2
-docker exec -it jobmanager ln -sf /usr/bin/python3 /usr/bin/python
-
 echo "Uruchamiam generator danych temperatury..."
 python3 temperature_generator.py &
 GENERATOR_PID=$!
