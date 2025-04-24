@@ -37,6 +37,6 @@ function cleanup {
     echo "Komponenty zatrzymane."
 }
 
-trap cleanup EXIT
+trap cleanup SIGINT SIGTERM EXIT
 
 wait
