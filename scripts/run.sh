@@ -24,7 +24,7 @@ python3 python/alarm_visualizer.py &
 VISUALIZER_PID=$!
 
 echo "Uruchamiam zadanie Flink..."
-./submit_flink_job.sh
+./scripts/submit_flink_job.sh
 
 echo "Wszystkie komponenty zostały uruchomione."
 echo "Kafka UI: http://localhost:8080"
