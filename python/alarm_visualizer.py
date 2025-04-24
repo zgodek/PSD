@@ -6,6 +6,7 @@ from kafka import KafkaConsumer
 from datetime import datetime
 import threading
 import collections
+import heapq  
 
 Z_SCORE_THRESHOLD = 2.5
 
@@ -25,14 +26,33 @@ stats_consumer = KafkaConsumer(
     group_id='temperature_visualization_stats'
 )
 
-# Dane do wizualizacji
 alarm_data = collections.defaultdict(list)
 stats_data = collections.defaultdict(list) 
-max_points = 1200  
+max_total_points = 12000 
+total_points_count = 0 
 data_lock = threading.Lock()
+
+all_points_queue = [] 
+
+
+def remove_oldest_points():
+    global total_points_count, all_points_queue
+    
+    while total_points_count > max_total_points:
+        timestamp, thermometer_id, is_alarm = heapq.heappop(all_points_queue)
+        
+        if is_alarm:
+            if thermometer_id in alarm_data and alarm_data[thermometer_id]:
+                alarm_data[thermometer_id].pop(0)  
+        else:
+            if thermometer_id in stats_data and stats_data[thermometer_id]:
+                stats_data[thermometer_id].pop(0)
+        
+        total_points_count -= 1
 
 
 def consume_alarm_data():
+    global total_points_count
     for message in alarm_consumer:
         data = message.value
         thermometer_id = data['id_termometru']
@@ -47,15 +67,18 @@ def consume_alarm_data():
         
         with data_lock:
             alarm_data[thermometer_id].append((timestamp, temperature, mean_temp, z_score))
+            total_points_count += 1
             
-            if len(alarm_data[thermometer_id]) > max_points:
-                alarm_data[thermometer_id] = alarm_data[thermometer_id][-max_points:]
+            heapq.heappush(all_points_queue, (timestamp, thermometer_id, True))
+            
+            remove_oldest_points()
         
         print(f"Alarm: Termometr {thermometer_id}, Czas: {timestamp}, Temperatura: {temperature:.2f}°C, "
               f"Średnia: {mean_temp:.2f}°C, Z-score: {z_score:.2f}")
 
 
 def consume_stats_data():
+    global total_points_count
     for message in stats_consumer:
         data = message.value
         thermometer_id = data['id_termometru']
@@ -70,9 +93,11 @@ def consume_stats_data():
         
         with data_lock:
             stats_data[thermometer_id].append((timestamp, temperature, mean_temp, z_score))
+            total_points_count += 1
             
-            if len(stats_data[thermometer_id]) > max_points:
-                stats_data[thermometer_id] = stats_data[thermometer_id][-max_points:]
+            heapq.heappush(all_points_queue, (timestamp, thermometer_id, False))
+            
+            remove_oldest_points()
 
 
 fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 15))
