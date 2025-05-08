@@ -281,9 +281,6 @@ class TransactionGenerator:
         transaction["anomaly"] = True
         transaction["anomaly_type"] = anomaly_type
 
-        # Current timestamp - all transactions happen now or in the future
-        current_timestamp = datetime.now().timestamp()
-
         # Modify transaction based on anomaly type
         if anomaly_type == "large_distance":
             # Generate location far away (>1000km)
@@ -299,11 +296,11 @@ class TransactionGenerator:
             # Generate two transactions in quick succession
             # First send a normal transaction
             normal_tx = self.generate_normal_transaction(card_id)
-            normal_tx["timestamp"] = current_timestamp
+            normal_tx["timestamp"] = transaction["timestamp"]
             self.producer.send(KAFKA_TOPIC, normal_tx)
             self.update_local_cache(card_id, normal_tx)
             # Then this anomalous one shortly after (in the future)
-            transaction["timestamp"] = current_timestamp + random.uniform(1, 10)  # 1-10 seconds later
+            transaction["timestamp"] = transaction["timestamp"] + random.uniform(1, 10)  # 1-10 seconds later
         elif anomaly_type == "negative_transaction":
             transaction["value"] = -random.uniform(1, 100)
             # Keep current timestamp
@@ -311,7 +308,7 @@ class TransactionGenerator:
             # Only makes sense if there was a recent transaction
             if days_since_last_transaction < 1:
                 transaction["latitude"], transaction["longitude"] = self.generate_location(card["last_lat"], card["last_lon"], is_anomaly=True)
-                transaction["timestamp"] = current_timestamp
+                transaction["timestamp"] = transaction["timestamp"]
             else:
                 # Not a good candidate for impossible travel, try another anomaly
                 return self.generate_anomaly_transaction(card_id)
@@ -321,7 +318,7 @@ class TransactionGenerator:
         elif anomaly_type == "pin_avoidance":
             # Generate 2-3 transactions just below PIN threshold
             num_transactions = random.randint(2, 3)
-            current_time = current_timestamp
+            current_time = transaction["timestamp"]
             for i in range(num_transactions - 1):
                 pin_tx = self.generate_normal_transaction(card_id)
                 pin_tx["value"] = random.uniform(90, 100)
@@ -377,7 +374,7 @@ class TransactionGenerator:
             # This card is already dormant (checked above)
             # Generate 2-3 transactions in quick succession after long dormancy
             num_transactions = random.randint(2, 3)
-            current_time = current_timestamp
+            current_time = transaction["timestamp"]
             for i in range(num_transactions - 1):
                 dormant_tx = self.generate_normal_transaction(card_id)
                 dormant_tx["anomaly"] = True
