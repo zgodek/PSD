@@ -1,4 +1,4 @@
-FROM flink:1.17.2
+FROM flink:1.20
 
 USER root
 RUN apt-get update && \
@@ -6,9 +6,9 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir numpy apache-flink==1.17.2 kafka-python && \
+RUN pip3 install --no-cache-dir numpy apache-flink==1.20 kafka-python && \
     ln -sf /usr/bin/python3 /usr/bin/python
 
-COPY ./flink-usrlib/flink-sql-connector-kafka-1.17.2.jar /opt/flink/lib/
+COPY ./flink-usrlib/flink-sql-connector-kafka-3.3.0-1.20.jar /opt/flink/lib/
 
 USER flink
