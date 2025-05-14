@@ -73,6 +73,7 @@ class TransactionGenerator:
         self.users = {}
         self.last_transactions = {}  # Store last transaction time and location per card
         self.user_last_transactions = {}  # Store last transaction per user across all cards
+        self.inactive_cards = set()  # Store IDs of inactive cards
 
         # Register signal handlers
         signal.signal(signal.SIGINT, self.handle_shutdown)
@@ -108,6 +109,13 @@ class TransactionGenerator:
                     "lat": card_data.get("last_lat", 0),
                     "lon": card_data.get("last_lon", 0)
                 }
+                current_time = datetime.now().timestamp()
+                last_transaction_time = card_data.get("last_transaction_time", 0)
+                days_since_last_transaction = (current_time - last_transaction_time) / (86400)
+
+                if days_since_last_transaction >= 30:
+                    self.inactive_cards.add(card_id)
+                    logger.info(f"Card {card_id} marked as inactive (no transactions for {days_since_last_transaction:.1f} days)")
 
                 # Initialize user's last transaction if this is more recent
                 user_id = card_data["user_id"]
@@ -245,29 +253,24 @@ class TransactionGenerator:
         # Get list of possible anomaly types for this card
         possible_anomalies = list(ANOMALY_TYPES.keys())
         anomaly_weights = list(ANOMALY_TYPES.values())
-
-        # Check if card is dormant (no transactions for over 30 days)
         current_time = datetime.now().timestamp()
         last_transaction_time = self.last_transactions[card_id]["time"]
         days_since_last_transaction = (current_time - last_transaction_time) / (86400)  # seconds to days
 
-        # If card is not dormant, remove dormant_card_activity from possible anomalies
-        if days_since_last_transaction < 30:
+        # Check if card is inactive based on Redis data
+        is_inactive = card_id in self.inactive_cards
+
+        # If card is not inactive, remove dormant_card_activity from possible anomalies
+        if not is_inactive:
             if "dormant_card_activity" in possible_anomalies:
                 idx = possible_anomalies.index("dormant_card_activity")
                 possible_anomalies.pop(idx)
                 anomaly_weights.pop(idx)
         else:
-            # If card is dormant, increase probability of dormant_card_activity
-            if "dormant_card_activity" in possible_anomalies:
-                idx = possible_anomalies.index("dormant_card_activity")
-                anomaly_weights[idx] = 0.5  # Increase weight for dormant cards
-
-        # If no anomalies are possible, default to a normal transaction
-        if not possible_anomalies:
-            # logger.info(f"No suitable anomalies for card {card_id}, generating normal transaction")
-            transaction = self.generate_normal_transaction(card_id)
-            return transaction
+            # If card is inactive, increase probability of dormant_card_activity
+            if is_inactive:
+                possible_anomalies = ["dormant_card_activity"]
+                anomaly_weights = [1.0]
 
         # Select anomaly type based on adjusted weights
         anomaly_type = random.choices(
@@ -305,7 +308,6 @@ class TransactionGenerator:
             transaction["value"] = -random.uniform(1, 100)
             # Keep current timestamp
         elif anomaly_type == "impossible_travel":
-            # Only makes sense if there was a recent transaction
             if days_since_last_transaction < 1:
                 transaction["latitude"], transaction["longitude"] = self.generate_location(card["last_lat"], card["last_lon"], is_anomaly=True)
                 transaction["timestamp"] = transaction["timestamp"]
@@ -384,7 +386,9 @@ class TransactionGenerator:
                 self.producer.send(KAFKA_TOPIC, dormant_tx)
                 self.update_local_cache(card_id, dormant_tx)
                 time.sleep(0.001)
-
+            if card_id in self.inactive_cards:
+                self.inactive_cards.remove(card_id)
+            logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
             transaction["timestamp"] = current_time  # Set to the latest time
 
         return transaction
@@ -400,6 +404,8 @@ class TransactionGenerator:
         if is_anomaly:
             transaction = self.generate_anomaly_transaction(card_id)
         else:
+            if card_id in self.inactive_cards:
+                return self.generate_transaction()
             transaction = self.generate_normal_transaction(card_id)
 
         # Update local cache for future transactions
@@ -443,7 +449,8 @@ class TransactionGenerator:
                 transaction = self.generate_transaction()
 
                 # Send to Kafka
-                self.producer.send(KAFKA_TOPIC, transaction)
+                if transaction:
+                    self.producer.send(KAFKA_TOPIC, transaction)
 
                 # Log transaction details
                 # if transaction["anomaly"]:
