@@ -108,6 +108,7 @@ def initialize_data(num_users, num_cards, force=False):
         user_cards_list = json.loads(user_cards)
         user_cards_list.append(card_id)
         redis_client.hset(f"user:{user_id}", "cards", json.dumps(user_cards_list))
+        redis_client.hset(f"processor_user:{user_id}", "cards", json.dumps(user_cards_list))
 
         logger.debug(f"Created card {card_id} for user {user_id}")
 
