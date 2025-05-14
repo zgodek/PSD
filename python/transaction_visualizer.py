@@ -273,6 +273,7 @@ class TransactionVisualizer:
                 if not transactions:
                     continue
 
+                all_times = []
                 color = colors[i % len(colors)]
 
                 # Extract data
