@@ -25,12 +25,11 @@ GENERATOR_PID=$!
 # python3 python/transaction_visualizer.py &
 # VISUALIZER_PID=$!
 
-echo "Uruchamiam zadanie Flink..."
-./scripts/t_submit_flink_job.sh
-
 echo "Wszystkie komponenty zostały uruchomione."
 echo "Kafka UI: http://localhost:8080"
 echo "Flink Dashboard: http://localhost:8081"
+
+./scripts/t_submit_flink_job.sh
 
 function cleanup {
     echo "Zatrzymywanie komponentów..."
