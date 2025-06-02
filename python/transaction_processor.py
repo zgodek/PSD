@@ -118,12 +118,45 @@ class BurstAfterInactivity(KeyedProcessFunction):
                         "card_id": card_id,
                         "burst_start": recent_timestamps[long_break_index].strftime('%Y-%m-%d %H:%M:%S'),
                         "transactions_in_burst": burst_count,
-                        "alarm_type": "PostInactivityTransactionBurst"
+                        "alarm_type": "DormantCardActivity"
                     }
                     return [json.dumps(alarm)]
                 else:
                     break
 
+        return []
+
+
+class CloseTransactionsNoPin(KeyedProcessFunction):
+    def open(self, runtime_context):
+        self.last_transaction_state = runtime_context.get_state(
+            ValueStateDescriptor("last_transaction", Types.PICKLED_BYTE_ARRAY())
+        )
+
+    def process_element(self, value, ctx):
+        current_time = value[0]
+        current_value = value[1]
+        card_id = value[2]
+
+        last_tx = self.last_transaction_state.value()
+
+        if last_tx is not None:
+            last_time, last_value = last_tx
+
+            if current_value < 100 and last_value < 100 and (current_time - last_time) < 300:
+                alarm = {
+                    "alarm_time": datetime.datetime.now().isoformat(),
+                    "card_id": card_id,
+                    "previous_transaction_time": last_time,
+                    "current_transaction_time": current_time,
+                    "previous_value": last_value,
+                    "current_value": current_value,
+                    "alarm_type": "PinAvoidance"
+                }
+                self.last_transaction_state.update((current_time, current_value))
+                return [json.dumps(alarm)]
+
+        self.last_transaction_state.update((current_time, current_value))
         return []
 
 
@@ -172,6 +205,12 @@ def main():
         producer_config={'bootstrap.servers': 'kafka:9092'}
     )
 
+    close_transactions_no_pin_producer = FlinkKafkaProducer(
+        topic='ManyTransactionsNoPin',
+        serialization_schema=SimpleStringSchema(),
+        producer_config={'bootstrap.servers': 'kafka:9092'}
+    )
+
     watermark_strategy = WatermarkStrategy \
         .for_monotonous_timestamps() \
         .with_timestamp_assigner(MyTimestampAssigner())
@@ -201,7 +240,7 @@ def main():
             'timestamp': x[0],
             'alarm_time': datetime.datetime.now().isoformat(),
             'value': x[1],
-            'alarm_type': 'TransactionBiggerThan10k'
+            'alarm_type': 'VeryHighValue'
         }),
         output_type=Types.STRING()
     )
@@ -220,7 +259,7 @@ def main():
             'alarm_time': datetime.datetime.now().isoformat(),
             'value': x[1],
             'card_limit': x[4],
-            'alarm_type': 'CardLimitReached'
+            'alarm_type': 'LimitExceeded'
         }),
         output_type=Types.STRING()
     )
@@ -229,16 +268,16 @@ def main():
         .key_by(lambda x: x[2]) \
         .process(BurstAfterInactivity(), output_type=Types.STRING())
     
-    # close_transactions_alarm = ds \
-    #     .key_by(lambda x: x[2]) \
-    #     .window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(1))) \
-    #     .process(CloseTransactions(), output_type=Types.STRING())
+    close_transactions_no_pin_alarm = ds \
+        .key_by(lambda x: x[2]) \
+        .process(CloseTransactionsNoPin(), output_type=Types.STRING())
 
     negative_value_alarm.add_sink(negative_producer)
     transaction_above_10k_alarm.add_sink(bigger_10k_producer)
     ten_times_average_alarm.add_sink(ten_times_average_producer)
     limit_reached_alarm.add_sink(limit_reached_producer)
     burst_after_inactivity_alarm.add_sink(burst_after_inactivity_producer)
+    close_transactions_no_pin_alarm.add_sink(close_transactions_no_pin_producer)
     env.execute("Transaction Anomaly Detection")
 
 
