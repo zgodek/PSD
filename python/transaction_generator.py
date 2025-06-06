@@ -187,8 +187,8 @@ class TransactionGenerator:
                 return random.uniform(*LAT_BOUNDS), random.uniform(*LON_BOUNDS)
         else:
             # For normal transactions, we want to stay close to the last location
-            # 80% chance to stay in the same general area
-            if random.random() < 0.8:
+            # 95% chance to stay in the same general area
+            if random.random() < 0.95:
                 # Small movement (within ~10km)
                 lat_variation = random.normalvariate(0, 0.05)  # ~5km in latitude
                 lon_variation = random.normalvariate(0, 0.05)  # ~5km in longitude
@@ -202,7 +202,7 @@ class TransactionGenerator:
 
                 return new_lat, new_lon
             else:
-                # 20% chance to move to a common location (e.g., travel)
+                # 5% chance to move to a common location (e.g., travel)
                 location = random.choice(COMMON_LOCATIONS)
                 return location["lat"], location["lon"]
 
@@ -309,14 +309,15 @@ class TransactionGenerator:
             transaction["value"] = -random.uniform(1, 100)
             # Keep current timestamp
         elif anomaly_type == "impossible_travel":
-            if days_since_last_transaction < 1:
-                transaction["latitude"], transaction["longitude"] = self.generate_location(card["last_lat"], card["last_lon"], is_anomaly=True)
-                transaction["timestamp"] = current_time + random.uniform(1, 10)
-            else:
-                # Not a good candidate for impossible travel, try another anomaly
-                return self.generate_anomaly_transaction(card_id)
+            # if days_since_last_transaction < 1:
+            transaction["latitude"], transaction["longitude"] = self.generate_location(card["last_lat"], card["last_lon"], is_anomaly=True)
+            transaction["timestamp"] = last_transaction_time + random.uniform(1, 10)
+            # else:
+            #     # Not a good candidate for impossible travel, try another anomaly
+            #     return self.generate_anomaly_transaction(card_id)
         elif anomaly_type == "limit_exceeded":
             transaction["value"] = card["available_limit"] + random.uniform(1, 100)
+            transaction["available_limit"] -= transaction["value"]
             # Keep current timestamp
         elif anomaly_type == "pin_avoidance":
             # Generate 2-3 transactions just below PIN threshold
@@ -349,6 +350,7 @@ class TransactionGenerator:
                 self.producer.send(KAFKA_TOPIC, pin_tx)
                 self.update_local_cache(card_id, pin_tx)
                 time.sleep(0.001)  # Small delay between sending
+            logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
 
             transaction["value"] = random.uniform(90, 100)
             transaction["timestamp"] = current_time  # Set to the latest time
@@ -388,6 +390,7 @@ class TransactionGenerator:
 
                     # If the time difference is less than the minimum travel time, it's an anomaly
                     if time_diff < min_travel_time:
+                        logger.info(f"Generated an anomalous transaction for user {user_id} at {transaction['timestamp']} (type: {anomaly_type})")
                         return transaction
             return self.generate_anomaly_transaction(card_id)
         elif anomaly_type == "dormant_card_activity":
@@ -409,11 +412,11 @@ class TransactionGenerator:
             transaction["timestamp"] = current_time  # Set to the latest time
         # if anomaly_type == "impossible_travel":
         #     logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
-        speed = self.calculate_distance(transaction['latitude'], transaction['longitude'], card['last_lat'], card['last_lon'])/(transaction['timestamp']-last_transaction_time)
-        if speed >= 900:
-            logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
-        if anomaly_type == "dormant_card_activity":
-            logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
+        # speed = self.calculate_distance(transaction['latitude'], transaction['longitude'], card['last_lat'], card['last_lon'])/(transaction['timestamp']-last_transaction_time)
+        # if speed >= 900:
+        #     logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
+        # if anomaly_type == "dormant_card_activity":
+        #     logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
         return transaction
 
     def generate_transaction(self):
@@ -485,7 +488,7 @@ class TransactionGenerator:
                 # else:
                 # logger.debug(f"Generated normal transaction for card {transaction['card_id']}")
 
-                time.sleep(0.001)
+                time.sleep(0.1)
 
         except Exception as e:
             logger.error(f"Error in transaction generator: {e}")

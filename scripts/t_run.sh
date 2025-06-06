@@ -7,7 +7,7 @@ else
     docker compose up -d
     
     echo "Czekam na uruchomienie kontenerów..."
-    sleep 10
+    sleep 20
 
     python3 python/initialize_data.py
 fi
