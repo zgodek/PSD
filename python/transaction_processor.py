@@ -3,7 +3,6 @@ import datetime
 import logging
 import math
 import redis
-from collections import deque
 from pyflink.datastream import StreamExecutionEnvironment, KeyedProcessFunction
 from pyflink.datastream.connectors import FlinkKafkaConsumer, FlinkKafkaProducer
 from pyflink.datastream.functions import FlatMapFunction, ProcessWindowFunction
@@ -14,9 +13,9 @@ from pyflink.common.typeinfo import Types
 from pyflink.common import Time
 from pyflink.common.watermark_strategy import WatermarkStrategy, TimestampAssigner
 
-
-WINDOW_SIZE = 10  # in seconds
-WINDOW_STEP = 2
+DAY_WINDOW_SIZE = 86400
+WINDOW_SIZE =  300
+WINDOW_STEP = 60
 REDIS_HOST = "redis"
 REDIS_PORT = 6379
 
@@ -64,7 +63,7 @@ class MyTimestampAssigner(TimestampAssigner):
         return element[0]
 
 
-class TenTimesTheAverage(KeyedProcessFunction): #zczytaj avg z bazy na początku
+class TenTimesTheAverage(KeyedProcessFunction):
     def open(self, runtime_context):
         self.values_state = runtime_context.get_list_state(
             ListStateDescriptor("values", Types.DOUBLE())
@@ -149,6 +148,7 @@ class BurstAfterInactivity(KeyedProcessFunction):
         if not recent_timestamps:
             redis_key = f"card:{card_id}"
             last_transaction_time = self.redis_client.hget(redis_key, "last_transaction_time")
+            self.redis_client.hset(redis_key, "last_transaction_time", tx_time)
             try:
                 recent_timestamps = [float(last_transaction_time)]
             except Exception as e:
@@ -163,7 +163,7 @@ class BurstAfterInactivity(KeyedProcessFunction):
         for i in range(1, len(recent_timestamps)):
             gap = recent_timestamps[i] - recent_timestamps[i - 1]
             if gap > 30 * 24 * 60 * 60:  # 30 days
-                print("Gap bigger than 30 days!!!")
+                # print("Gap bigger than 30 days!!!")
                 long_break_index = i
                 break
 
@@ -184,8 +184,6 @@ class BurstAfterInactivity(KeyedProcessFunction):
                     "transactions_in_burst": burst_count,
                     "alarm_type": "DormantCardActivity"
                 }
-                # recent_timestamps = [recent_timestamps[-1]] #without these the alarms will double if there are 3 transactions in a row
-                # self.timestamps_state.update(recent_timestamps)
                 return [json.dumps(alarm)]
         return []
 
@@ -226,7 +224,7 @@ class CloseTransactionsNoPin(KeyedProcessFunction):
 class RapidTransactions(KeyedProcessFunction):
     def open(self, runtime_context):
         self.last_time_state = runtime_context.get_state(
-            ValueStateDescriptor("last_tx_time", Types.DOUBLE())  # zakładamy timestamp w sekundach
+            ValueStateDescriptor("last_tx_time", Types.DOUBLE())
         )
 
     def process_element(self, value, ctx):
@@ -257,6 +255,7 @@ class ImpossibleTravel(KeyedProcessFunction):
         )
 
     def process_element(self, value, ctx):
+        alarm_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         timestamp = value[0]
         card_id = value[2]
         lat = value[5]
@@ -277,7 +276,7 @@ class ImpossibleTravel(KeyedProcessFunction):
             speed = distance_km / time_diff_hr
             if speed >= 900:
                 alarm = {
-                    "alarm_time": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    "alarm_time": alarm_time,
                     "card_id": card_id,
                     "current_location": {"lat": lat, "lon": lon},
                     "previous_location": {"lat": last_lat, "lon": last_lon},
@@ -292,6 +291,68 @@ class ImpossibleTravel(KeyedProcessFunction):
         self.last_tx_state.update((timestamp, lat, lon))
         return []
 
+
+class MultiCardDistance(ProcessWindowFunction):
+    def process(self, key, context, elements):
+        results = []
+        alarm_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        transactions = list(elements)
+        for i in range(len(transactions)):
+            t1 = transactions[i]
+            for j in range(i + 1, len(transactions)):
+                t2 = transactions[j]
+
+                card_id_1 = t1[2]
+                card_id_2 = t2[2]
+
+                if card_id_1 == card_id_2:
+                    continue
+
+                timestamp_1 = t1[0]
+                timestamp_2 = t2[0]
+                time_diff = abs(timestamp_1 - timestamp_2)
+
+                lat1, lon1 = t1[5], t1[6]
+                lat2, lon2 = t2[5], t2[6]
+                dist_km = calculate_distance(lat1, lon1, lat2, lon2)
+                speed = dist_km/time_diff
+                print(f"user_id: {key} card_id_1: {card_id_1} card_id_2: {card_id_2} speed: {speed}")
+                if speed >= 900:
+                    alarm = {
+                        "alarm_time": alarm_time,
+                        "user_id": key,
+                        "card_id_1": card_id_1,
+                        "card_id_2": card_id_2,
+                        "time_diff_seconds": time_diff,
+                        "distance_km": dist_km,
+                        "alarm_type": "MultiCardDistance"
+                    }
+                    results.append(json.dumps(alarm))
+
+        return results
+
+
+class ManyTransactionsNoPin(ProcessWindowFunction):
+    def process(self, key, context, elements):
+        results = []
+        alarm_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        low_value_count = 0
+
+        for e in elements:
+            amount = e[1]
+            if amount < 100:
+                low_value_count += 1
+
+        if low_value_count >= 5:
+            alarm = {
+                "alarm_time": alarm_time,
+                "card_id": key,
+                "count": low_value_count,
+                "alarm_type": "ManyTransactionsNoPin"
+            }
+            results.append(json.dumps(alarm))
+
+        return results
 
 def main():
     env = StreamExecutionEnvironment.get_execution_environment()
@@ -339,7 +400,7 @@ def main():
     )
 
     close_transactions_no_pin_producer = FlinkKafkaProducer(
-        topic='ManyTransactionsNoPin',
+        topic='CloseManyTransactionsNoPin',
         serialization_schema=SimpleStringSchema(),
         producer_config={'bootstrap.servers': 'kafka:9092'}
     )
@@ -356,11 +417,17 @@ def main():
         producer_config={'bootstrap.servers': 'kafka:9092'}
     )
 
-    multi_card_impossible_travel_producer = FlinkKafkaProducer(
-        topic='MultiCardImpossibleTravel',
-        serialization_schema=SimpleStringSchema(),
-        producer_config={'bootstrap.servers': 'kafka:9092'}
-    )
+    # multi_card_distance_producer = FlinkKafkaProducer(
+    #     topic='MultiCardImpossibleTravel',
+    #     serialization_schema=SimpleStringSchema(),
+    #     producer_config={'bootstrap.servers': 'kafka:9092'}
+    # )
+
+    # many_transactions_no_pin_producer = FlinkKafkaProducer(
+    #     topic='ManyTransactionsNoPinInDay',
+    #     serialization_schema=SimpleStringSchema(),
+    #     producer_config={'bootstrap.servers': 'kafka:9092'}
+    # )
 
     watermark_strategy = WatermarkStrategy \
         .for_monotonous_timestamps() \
@@ -374,9 +441,9 @@ def main():
     .filter(lambda x: x[1] < 0) \
     .map(
         lambda x: json.dumps({
+            'alarm_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'card_id': x[2],
             'timestamp': x[0],
-            'alarm_time': datetime.datetime.now().isoformat(),
             'value': x[1],
             'alarm_type': 'NegativeTransaction'
         }),
@@ -387,9 +454,9 @@ def main():
     .filter(lambda x: x[1] >= 10000) \
     .map(
         lambda x: json.dumps({
+            'alarm_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'card_id': x[2],
             'timestamp': x[0],
-            'alarm_time': datetime.datetime.now().isoformat(),
             'value': x[1],
             'alarm_type': 'VeryHighValue'
         }),
@@ -399,15 +466,14 @@ def main():
     ten_times_average_alarm = ds \
         .key_by(lambda x: x[2]) \
         .process(TenTimesTheAverage(), output_type=Types.STRING())
-        # .window(SlidingEventTimeWindows.of(Time.seconds(WINDOW_SIZE), Time.seconds(WINDOW_STEP))) \
     
     limit_reached_alarm = ds \
     .filter(lambda x: x[4] <= 0.001) \
     .map(
         lambda x: json.dumps({
+            'alarm_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'card_id': x[2],
             'timestamp': x[0],
-            'alarm_time': datetime.datetime.now().isoformat(),
             'value': x[1],
             'card_limit': x[4],
             'alarm_type': 'LimitExceeded'
@@ -431,6 +497,16 @@ def main():
         .key_by(lambda x: x[2]) \
         .process(ImpossibleTravel(), output_type=Types.STRING())
 
+    # multi_card_distance_alarm = ds \
+    #     .key_by(lambda x: x[3]) \
+    #     .window(SlidingEventTimeWindows.of(Time.seconds(WINDOW_SIZE), Time.seconds(WINDOW_STEP))) \
+    #     .process(MultiCardDistance(), output_type=Types.STRING())
+
+    # many_transactions_no_pin_alarm = ds \
+    #     .key_by(lambda x: x[2]) \
+    #     .window(TumblingEventTimeWindows.of(Time.seconds(DAY_WINDOW_SIZE))) \
+    #     .process(ManyTransactionsNoPin(), output_type=Types.STRING())
+
     negative_value_alarm.add_sink(negative_producer)
     transaction_above_10k_alarm.add_sink(bigger_10k_producer)
     ten_times_average_alarm.add_sink(ten_times_average_producer)
@@ -439,6 +515,8 @@ def main():
     close_transactions_no_pin_alarm.add_sink(close_transactions_no_pin_producer)
     rapid_transactions_alarm.add_sink(rapid_transactions_producer)
     impossible_travel_alarm.add_sink(impossible_travel_producer)
+    # many_transactions_no_pin_alarm.add_sink(many_transactions_no_pin_producer)
+    # multi_card_distance_alarm.add_sink(multi_card_distance_producer)
     env.execute("Transaction Anomaly Detection")
 
 
