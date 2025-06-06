@@ -55,8 +55,9 @@ ANOMALY_TYPES = {
     "impossible_travel": 0.1,        # Transactions too far apart given time difference
     "limit_exceeded": 0.1,           # Exceeding card limit
     "pin_avoidance": 0.1,            # Multiple transactions just below PIN threshold (90-100 PLN)
+    "pin_avoidance2": 0.05,            # Multiple transactions just below PIN threshold (90-100 PLN)
     "multi_card_distance": 0.1,      # Same user, different cards, large distance, small time
-    "dormant_card_activity": 0.15    # Sudden activity after long dormancy
+    "dormant_card_activity": 0.1    # Sudden activity after long dormancy
 }
 
 
@@ -334,6 +335,23 @@ class TransactionGenerator:
 
             transaction["value"] = random.uniform(90, 100)
             transaction["timestamp"] = current_time  # Set to the latest time
+        elif anomaly_type == "pin_avoidance2":
+            # Generate 2-3 transactions just below PIN threshold
+            num_transactions = random.randint(5, 6)
+            current_time = transaction["timestamp"]
+            for i in range(num_transactions - 1):
+                pin_tx = self.generate_normal_transaction(card_id)
+                pin_tx["value"] = random.uniform(90, 100)
+                pin_tx["anomaly"] = True
+                pin_tx["anomaly_type"] = "pin_avoidance2"
+                pin_tx["timestamp"] = current_time
+                current_time += random.uniform(60, 300)  # 1-5 minutes later
+                self.producer.send(KAFKA_TOPIC, pin_tx)
+                self.update_local_cache(card_id, pin_tx)
+                time.sleep(0.001)  # Small delay between sending
+
+            transaction["value"] = random.uniform(90, 100)
+            transaction["timestamp"] = current_time  # Set to the latest time
         elif anomaly_type == "multi_card_distance":
             # Check if user has multiple cards
             user_id = card["user_id"]
@@ -408,6 +426,11 @@ class TransactionGenerator:
 
         if is_anomaly:
             transaction = self.generate_anomaly_transaction(card_id)
+            if transaction["anomaly_type"] == "multi_card_distance":
+                self.update_local_cache(card_id, transaction)
+                self.producer.send(KAFKA_TOPIC, transaction)
+                transaction = self.generate_normal_transaction(card_id)
+                return transaction
         else:
             if card_id in self.inactive_cards:
                 return self.generate_transaction()
@@ -415,7 +438,6 @@ class TransactionGenerator:
 
         # Update local cache for future transactions
         self.update_local_cache(card_id, transaction)
-
         return transaction
 
     def update_local_cache(self, card_id, transaction):
