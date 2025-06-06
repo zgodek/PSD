@@ -64,45 +64,82 @@ class MyTimestampAssigner(TimestampAssigner):
         return element[0]
 
 
-class TenTimesTheAverage(ProcessWindowFunction): #zczytaj 50 wartości z bazy na początku
+class TenTimesTheAverage(KeyedProcessFunction): #zczytaj avg z bazy na początku
     def open(self, runtime_context):
-        self.card_state = runtime_context.get_state(
-            ValueStateDescriptor("card_state", Types.PICKLED_BYTE_ARRAY())
+        self.values_state = runtime_context.get_list_state(
+            ListStateDescriptor("values", Types.DOUBLE())
         )
+        self.avg_state = runtime_context.get_state(
+            ValueStateDescriptor("avg", Types.DOUBLE())
+        )
+        self.timer_state = runtime_context.get_state(
+            ValueStateDescriptor("timer_ts", Types.LONG())
+        )
+        self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
-    def process(self, key, context, elements):
-        results = []
-        alarm_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    def process_element(self, value, ctx):
+        amount = value[1]
+        card_id = value[2]
 
-        state = self.card_state.value()
-        if state is None:
-            state = {}
+        values = list(self.values_state.get()) or []
+        values.append(amount)
+        self.values_state.update(values)
 
-        for e in elements:
-            value = e[1]
-            card_id = e[2]
+        avg = self.avg_state.value() or None
+        if avg is None:
+            redis_key = f"card:{card_id}"
+            try:
+                avg = float(self.redis_client.hget(redis_key, "avg_value"))
+                self.avg_state.update(avg)
+                print(f"Read data from redis: {card_id} avg_value: {avg}")
+            except Exception as e:
+                logger.error(f"Error parsing Redis avg_value for card {card_id}: {e}")
+        if avg is not None and amount >= 10 * avg:
+            alarm = {
+                "card_id": card_id,
+                "value": amount,
+                "average": avg,
+                "alarm_time": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "alarm_type": "TransactionTenTimesTheAverage"
+            }
+            yield json.dumps(alarm)
 
-            if card_id not in state:
-                state[card_id] = deque(maxlen=50)
+        # Register timer at next day if not already
+        if self.timer_state.value() is None:
+            curr_water_mark = ctx.timer_service().current_watermark()
+            if curr_water_mark < 0:
+                next_day = datetime.datetime.now() + datetime.timedelta(hours=3)
+            else:
+                next_day = datetime.datetime.fromtimestamp(curr_water_mark) + datetime.timedelta(hours=3)
+            next_day_ts = next_day.timestamp()
+            ctx.timer_service().register_event_time_timer(next_day_ts)
+            print("Watermark:", curr_water_mark)
+            print("Registering timer for:", next_day_ts)
+            self.timer_state.update(next_day_ts)
 
-            value_history = state[card_id]
-            last_avg = sum(value_history) / len(value_history) if value_history else 0
-
-            if len(value_history) >= 10 and value > 10 * last_avg:
-                alarm = {
-                    "alarm_time": alarm_time,
-                    "card_id": card_id,
-                    "value": value,
-                    "last_avg": last_avg,
-                    "alarm_type": "TenTimesTheAverage"
-                }
-                results.append(json.dumps(alarm))
-
-            value_history.append(value)
-            state[card_id] = value_history
-
-        self.card_state.update(state)
-        return results
+    def on_timer(self, timestamp, ctx):
+        values = list(self.values_state.get())
+        card_id = ctx.get_current_key()
+        if values:
+            new_avg = sum(values) / len(values)
+            if new_avg > 0:
+                self.avg_state.update(new_avg)
+                redis_key = f"card:{card_id}"
+                try:
+                    self.redis_client.hset(redis_key, "avg_value", new_avg)
+                    print(f"Updated Redis: {redis_key} avg_value = {new_avg}")
+                except Exception as e:
+                    logger.error(f"Error writing to Redis for card {card_id}: {e}")
+                print("Watermark:", ctx.timer_service().current_watermark())
+                print(f"New average for card {ctx.get_current_key()}: {new_avg:.2f} Calculated on values: {values}")
+            else:
+                self.avg_state.clear()
+        else:
+            self.avg_state.clear()
+        # Clear collected values and timer state
+        self.values_state.clear()
+        self.timer_state.clear()
+        return []
 
 
 class BurstAfterInactivity(KeyedProcessFunction):
@@ -369,8 +406,8 @@ def main():
 
     ten_times_average_alarm = ds \
         .key_by(lambda x: x[2]) \
-        .window(SlidingEventTimeWindows.of(Time.seconds(WINDOW_SIZE), Time.seconds(WINDOW_STEP))) \
         .process(TenTimesTheAverage(), output_type=Types.STRING())
+        # .window(SlidingEventTimeWindows.of(Time.seconds(WINDOW_SIZE), Time.seconds(WINDOW_STEP))) \
     
     limit_reached_alarm = ds \
     .filter(lambda x: x[4] <= 0.001) \
