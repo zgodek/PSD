@@ -310,7 +310,7 @@ class TransactionGenerator:
         elif anomaly_type == "impossible_travel":
             if days_since_last_transaction < 1:
                 transaction["latitude"], transaction["longitude"] = self.generate_location(card["last_lat"], card["last_lon"], is_anomaly=True)
-                transaction["timestamp"] = transaction["timestamp"]
+                transaction["timestamp"] = current_time + random.uniform(1, 10)
             else:
                 # Not a good candidate for impossible travel, try another anomaly
                 return self.generate_anomaly_transaction(card_id)
@@ -388,9 +388,14 @@ class TransactionGenerator:
                 time.sleep(0.001)
             if card_id in self.inactive_cards:
                 self.inactive_cards.remove(card_id)
-            logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
             transaction["timestamp"] = current_time  # Set to the latest time
-
+        # if anomaly_type == "impossible_travel":
+        #     logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
+        speed = self.calculate_distance(transaction['latitude'], transaction['longitude'], card['last_lat'], card['last_lon'])/(transaction['timestamp']-last_transaction_time)
+        if speed >= 900:
+            logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
+        if anomaly_type == "dormant_card_activity":
+            logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
         return transaction
 
     def generate_transaction(self):

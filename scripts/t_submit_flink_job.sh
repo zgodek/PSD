@@ -13,6 +13,8 @@ if ! curl -s http://localhost:8081 > /dev/null; then
 fi
 
 echo "Kopiowanie pliku procesora do kontenera Flink..."
+docker exec --user root jobmanager pip install --target=/usr/local/lib/python3.10/dist-packages/ redis
+docker exec --user root taskmanager pip install --target=/usr/local/lib/python3.10/dist-packages/ redis
 docker cp "$PROCESSOR_FILE" jobmanager:/opt/flink/
 
 echo "Uruchamianie zadania Flink..."
