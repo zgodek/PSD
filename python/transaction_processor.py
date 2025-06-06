@@ -91,7 +91,6 @@ class TenTimesTheAverage(KeyedProcessFunction): #zczytaj avg z bazy na początku
             try:
                 avg = float(self.redis_client.hget(redis_key, "avg_value"))
                 self.avg_state.update(avg)
-                print(f"Read data from redis: {card_id} avg_value: {avg}")
             except Exception as e:
                 logger.error(f"Error parsing Redis avg_value for card {card_id}: {e}")
         if avg is not None and amount >= 10 * avg:
@@ -104,7 +103,6 @@ class TenTimesTheAverage(KeyedProcessFunction): #zczytaj avg z bazy na początku
             }
             yield json.dumps(alarm)
 
-        # Register timer at next day if not already
         if self.timer_state.value() is None:
             curr_water_mark = ctx.timer_service().current_watermark()
             if curr_water_mark < 0:
@@ -113,8 +111,6 @@ class TenTimesTheAverage(KeyedProcessFunction): #zczytaj avg z bazy na początku
                 next_day = datetime.datetime.fromtimestamp(curr_water_mark) + datetime.timedelta(hours=3)
             next_day_ts = next_day.timestamp()
             ctx.timer_service().register_event_time_timer(next_day_ts)
-            print("Watermark:", curr_water_mark)
-            print("Registering timer for:", next_day_ts)
             self.timer_state.update(next_day_ts)
 
     def on_timer(self, timestamp, ctx):
@@ -127,16 +123,12 @@ class TenTimesTheAverage(KeyedProcessFunction): #zczytaj avg z bazy na początku
                 redis_key = f"card:{card_id}"
                 try:
                     self.redis_client.hset(redis_key, "avg_value", new_avg)
-                    print(f"Updated Redis: {redis_key} avg_value = {new_avg}")
                 except Exception as e:
                     logger.error(f"Error writing to Redis for card {card_id}: {e}")
-                print("Watermark:", ctx.timer_service().current_watermark())
-                print(f"New average for card {ctx.get_current_key()}: {new_avg:.2f} Calculated on values: {values}")
             else:
                 self.avg_state.clear()
         else:
             self.avg_state.clear()
-        # Clear collected values and timer state
         self.values_state.clear()
         self.timer_state.clear()
         return []
