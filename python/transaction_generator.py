@@ -48,12 +48,12 @@ COMMON_LOCATIONS = [
 ANOMALY_PROBABILITY = 0.05  # 5% chance of an anomaly
 ANOMALY_TYPES = {
     "large_distance": 0.1,           # Large distance from previous transaction
-    "high_value": 0.1,               # Value 10x higher than average
+    "high_value": 0.2,               # Value 10x higher than average
     "very_high_value": 0.1,          # Value > 10000 PLN
     "rapid_transactions": 0.1,       # Transactions < 10s apart
     "negative_transaction": 0.05,    # Negative transaction value
     "impossible_travel": 0.1,        # Transactions too far apart given time difference
-    "limit_exceeded": 0.1,           # Exceeding card limit
+    # "limit_exceeded": 0.1,           # Exceeding card limit
     "pin_avoidance": 0.1,            # Multiple transactions just below PIN threshold (90-100 PLN)
     "pin_avoidance2": 0.05,            # Multiple transactions just below PIN threshold (90-100 PLN)
     "multi_card_distance": 0.1,      # Same user, different cards, large distance, small time
@@ -256,7 +256,6 @@ class TransactionGenerator:
         anomaly_weights = list(ANOMALY_TYPES.values())
         current_time = datetime.now().timestamp()
         last_transaction_time = self.last_transactions[card_id]["time"]
-        days_since_last_transaction = (current_time - last_transaction_time) / (86400)  # seconds to days
 
         # Check if card is inactive based on Redis data
         is_inactive = card_id in self.inactive_cards

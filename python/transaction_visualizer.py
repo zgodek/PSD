@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 KAFKA_TOPIC = "Transactions"
+KAFKA_ALARM = "Alarms"
 KAFKA_BOOTSTRAP_SERVERS = ["localhost:29092"]
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
@@ -31,10 +32,11 @@ MAX_POINTS = 10000  # Maximum number of points to display
 
 
 class TransactionVisualizer:
-    def __init__(self, card_id: Optional[int] = None, user_id: Optional[int] = None):
+    def __init__(self, card_id: Optional[int] = None, user_id: Optional[int] = None, use_alerts_topic: bool = False):
         """Initialize the transaction visualizer for a specific card or user"""
         self.card_id = card_id
         self.user_id = user_id
+        self.use_alerts_topic = use_alerts_topic
 
         if card_id is None and user_id is None:
             raise ValueError("Either card_id or user_id must be provided")
@@ -52,8 +54,17 @@ class TransactionVisualizer:
         # Initialize Kafka consumer
         try:
             logger.info(f"Connecting to Kafka at {KAFKA_BOOTSTRAP_SERVERS}...")
+
+            # Determine which topics to consume based on the mode
+            topics_to_consume = [KAFKA_TOPIC]
+            if self.use_alerts_topic:
+                topics_to_consume.append(KAFKA_ALARM)
+                logger.info(f"Operating in mode 2: Consuming from both {KAFKA_TOPIC} and {KAFKA_ALARM} topics")
+            else:
+                logger.info(f"Operating in mode 1: Consuming only from {KAFKA_TOPIC} topic")
+
             self.consumer = KafkaConsumer(
-                KAFKA_TOPIC,
+                *topics_to_consume,
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                 auto_offset_reset='earliest',
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')),
@@ -65,6 +76,8 @@ class TransactionVisualizer:
 
             if KAFKA_TOPIC not in topics:
                 logger.warning(f"Topic '{KAFKA_TOPIC}' does not exist. Make sure it's created.")
+            if self.use_alerts_topic and KAFKA_ALARM not in topics:
+                logger.warning(f"Topic '{KAFKA_ALARM}' does not exist. Make sure it's created.")
         except Exception as e:
             logger.error(f"Failed to connect to Kafka: {e}")
             sys.exit(1)
@@ -72,6 +85,7 @@ class TransactionVisualizer:
         # Data structures for storing transaction data
         self.transactions = collections.defaultdict(list)  # card_id -> list of transactions
         self.anomalies = collections.defaultdict(list)     # card_id -> list of anomalous transactions
+        self.alerts = collections.defaultdict(list)        # card_id -> list of alerts from Alerts topic
         self.data_lock = threading.Lock()
 
         # If user_id is provided, get all cards for this user
@@ -168,51 +182,21 @@ class TransactionVisualizer:
                 if not self.running:
                     break
 
+                topic = message.topic
                 transaction = message.value
-                card_id = transaction["card_id"]
                 received_count += 1
 
                 if received_count % 1000 == 0:
-                    logger.info(f"Received {received_count} transactions so far")
+                    logger.info(f"Received {received_count} messages so far")
 
-                # Check if this transaction is relevant to our visualization
-                is_relevant = False
-                if self.card_id is not None and card_id == self.card_id:
-                    is_relevant = True
-                elif self.user_id is not None and card_id in self.user_cards:
-                    is_relevant = True
-
-                if is_relevant:
-                    with self.data_lock:
-                        # Add transaction to our data
-                        transaction_data = {
-                            "timestamp": transaction["timestamp"],
-                            "datetime": datetime.fromtimestamp(transaction["timestamp"]),
-                            "value": transaction["value"],
-                            "latitude": transaction["latitude"],
-                            "longitude": transaction["longitude"],
-                            "available_limit": transaction["available_limit"],
-                            "anomaly": transaction["anomaly"],
-                            "anomaly_type": transaction["anomaly_type"]
-                        }
-
-                        self.transactions[card_id].append(transaction_data)
-
-                        # If anomalous, add to anomalies list
-                        if transaction["anomaly"]:
-                            self.anomalies[card_id].append(transaction_data)
-                            logger.info(f"Detected anomaly: {transaction['anomaly_type']} for card {card_id}")
-
-                        # Limit the number of points
-                        if len(self.transactions[card_id]) > MAX_POINTS:
-                            self.transactions[card_id] = self.transactions[card_id][-MAX_POINTS:]
-                        if len(self.anomalies[card_id]) > MAX_POINTS:
-                            self.anomalies[card_id] = self.anomalies[card_id][-MAX_POINTS:]
-
-                    logger.debug(f"Processed transaction for card {card_id}: {transaction}")
+                # Process based on topic
+                if topic == KAFKA_TOPIC:
+                    self.process_transaction(transaction)
+                elif topic == KAFKA_ALARM and self.use_alerts_topic:
+                    self.process_alert(transaction)
 
         except Exception as e:
-            logger.error(f"Error consuming transactions: {e}")
+            logger.error(f"Error consuming messages: {e}")
             if not self.running:
                 return
 
@@ -220,8 +204,12 @@ class TransactionVisualizer:
             logger.info("Attempting to reconnect to Kafka...")
             try:
                 self.consumer.close()
+                topics_to_consume = [KAFKA_TOPIC]
+                if self.use_alerts_topic:
+                    topics_to_consume.append(KAFKA_ALARM)
+
                 self.consumer = KafkaConsumer(
-                    KAFKA_TOPIC,
+                    topics_to_consume,
                     bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                     auto_offset_reset='latest',
                     value_deserializer=lambda x: json.loads(x.decode('utf-8'))
@@ -230,6 +218,102 @@ class TransactionVisualizer:
                 self.consume_transactions()  # Restart consumption
             except Exception as e:
                 logger.error(f"Failed to reconnect to Kafka: {e}")
+
+    def process_transaction(self, transaction):
+        """Process a transaction message from the Transactions topic"""
+        card_id = transaction["card_id"]
+
+        # Check if this transaction is relevant to our visualization
+        is_relevant = False
+        if self.card_id is not None and card_id == self.card_id:
+            is_relevant = True
+        elif self.user_id is not None and card_id in self.user_cards:
+            is_relevant = True
+
+        if is_relevant:
+            with self.data_lock:
+                # Add transaction to our data
+                transaction_data = {
+                    "timestamp": transaction["timestamp"],
+                    "datetime": datetime.fromtimestamp(transaction["timestamp"]),
+                    "value": transaction["value"],
+                    "latitude": transaction["latitude"],
+                    "longitude": transaction["longitude"],
+                    "available_limit": transaction["available_limit"],
+                    "anomaly": transaction["anomaly"] if not self.use_alerts_topic else False,  # In mode 2, anomalies come from alerts
+                    "anomaly_type": transaction["anomaly_type"] if not self.use_alerts_topic else None
+                }
+
+                self.transactions[card_id].append(transaction_data)
+
+                # If anomalous and in mode 1, add to anomalies list
+                if transaction["anomaly"] and not self.use_alerts_topic:
+                    self.anomalies[card_id].append(transaction_data)
+                    logger.info(f"Detected anomaly: {transaction['anomaly_type']} for card {card_id}")
+
+                # Check if there are any stored alerts that match this transaction
+                if self.use_alerts_topic:
+                    for alert in self.alerts[card_id]:
+                        if abs(transaction_data["timestamp"] - alert["alarm_time"]) < 1:  # Within 1 second
+                            transaction_data["anomaly"] = True
+                            transaction_data["anomaly_type"] = alert["alarm_type"]
+                            self.anomalies[card_id].append(transaction_data)
+                            logger.info(f"Matched stored alert {alert['alarm_type']} to new transaction for card {card_id}")
+                            # Remove the matched alert
+                            self.alerts[card_id].remove(alert)
+                            break
+
+                # Limit the number of points
+                if len(self.transactions[card_id]) > MAX_POINTS:
+                    self.transactions[card_id] = self.transactions[card_id][-MAX_POINTS:]
+                if len(self.anomalies[card_id]) > MAX_POINTS:
+                    self.anomalies[card_id] = self.anomalies[card_id][-MAX_POINTS:]
+
+        logger.debug(f"Processed transaction for card {card_id}: {transaction}")
+
+    def process_alert(self, alert):
+        """Process an alert message from the Alerts topic"""
+        try:
+            card_id = alert["card_id"]
+            alarm_time = alert["alarm_time"]
+            alarm_type = alert["alarm_type"]
+
+            # Check if this alert is relevant to our visualization
+            is_relevant = False
+            if self.card_id is not None and card_id == self.card_id:
+                is_relevant = True
+            elif self.user_id is not None and card_id in self.user_cards:
+                is_relevant = True
+
+            if is_relevant:
+                with self.data_lock:
+                    # Store the alert for future matching
+                    self.alerts[card_id].append(alert)
+
+                    # Find the corresponding transaction in our data
+                    found = False
+                    for transaction in self.transactions[card_id]:
+                        # Match by timestamp (approximately)
+                        if abs(transaction["timestamp"] - alarm_time) < 1:  # Within 1 second
+                            transaction["anomaly"] = True
+                            transaction["anomaly_type"] = alarm_type
+                            self.anomalies[card_id].append(transaction)
+                            found = True
+                            logger.info(f"Matched alert {alarm_type} to transaction for card {card_id}")
+                            break
+
+                    # If no matching transaction found, log it but don't error
+                    if not found:
+                        logger.info(f"Alert {alarm_type} for card {card_id} stored for future matching")
+
+                    # Limit the number of points
+                    if len(self.alerts[card_id]) > MAX_POINTS:
+                        self.alerts[card_id] = self.alerts[card_id][-MAX_POINTS:]
+
+        except KeyError as e:
+            logger.error(f"Missing key in alert message: {e}")
+        except Exception as e:
+            logger.error(f"Error processing alert: {e}")
 
     def update_plot(self, frame):
         """Update the matplotlib plot with new data"""
@@ -339,8 +423,10 @@ class TransactionVisualizer:
                             transactions[j]["anomaly_type"],
                             (datetimes[j], 1.05),
                             rotation=45,
-                            ha='right',
-                            fontsize=8
+                            ha='left',
+                            va='bottom',
+                            fontsize=8,
+                            bbox=dict(boxstyle="round,pad=0.3", fc="yellow", alpha=0.5)
                         )
 
             # Add legends
@@ -348,7 +434,7 @@ class TransactionVisualizer:
             self.ax_limit.legend()
             self.ax_freq.legend()
             self.ax_anomaly.legend()
-
+            all_times = []
             if card_ids:
                 all_times = []
                 for card_id in card_ids:
@@ -388,7 +474,6 @@ class TransactionVisualizer:
         # Get unique days
         days = set(dt.date() for dt in datetimes)
         return len(days) > 1
-        return []
 
     def update_map_periodically(self):
         """Periodically update the folium map with transaction locations"""
@@ -434,15 +519,16 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--card', type=int, help='Card ID to visualize')
     group.add_argument('--user', type=int, help='User ID to visualize (all cards)')
+    parser.add_argument('--use-alerts-topic', action='store_true', help='Use the Alerts topic for anomaly detection')
     args = parser.parse_args()
 
     try:
         # Create and run the visualizer
         if args.card:
-            visualizer = TransactionVisualizer(card_id=args.card)
+            visualizer = TransactionVisualizer(card_id=args.card, use_alerts_topic=args.use_alerts_topic)
             logger.info(f"Starting visualization for card ID: {args.card}")
         else:
-            visualizer = TransactionVisualizer(user_id=args.user)
+            visualizer = TransactionVisualizer(user_id=args.user, use_alerts_topic=args.use_alerts_topic)
             logger.info(f"Starting visualization for user ID: {args.user}")
 
         visualizer.run()

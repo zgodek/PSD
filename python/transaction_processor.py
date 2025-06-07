@@ -13,10 +13,12 @@ from pyflink.common import Time
 from pyflink.common.watermark_strategy import WatermarkStrategy, TimestampAssigner
 
 DAY_WINDOW_SIZE = 86400
-WINDOW_SIZE =  300
+WINDOW_SIZE = 300
 WINDOW_STEP = 60
 REDIS_HOST = "redis"
 REDIS_PORT = 6379
+KAFKA_TOPIC = "Transactions"
+KAFKA_ALARMS = "Alarms"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -81,7 +83,7 @@ class TenTimesTheAverage(ProcessWindowFunction):
                 self.avg_state.update(avg)
             except Exception as e:
                 logger.error(f"Error parsing Redis avg_value for card {card_id}: {e}")
-        
+
         values = []
         for e in elements:
             if avg is not None and e[1] >= 10 * avg:
@@ -104,7 +106,7 @@ class TenTimesTheAverage(ProcessWindowFunction):
                 self.avg_state.update(new_avg)
             except Exception as e:
                 logger.error(f"Error writing to Redis for card {card_id}: {e}")
-        
+
         return results
 
 
@@ -266,7 +268,6 @@ class ImpossibleTravel(KeyedProcessFunction):
         return []
 
 
-
 class MultiCardDistance(KeyedProcessFunction):
     def open(self, runtime_context):
         self.transactions_state = runtime_context.get_list_state(
@@ -276,45 +277,44 @@ class MultiCardDistance(KeyedProcessFunction):
     def process_element(self, value, ctx):
         results = []
         user_id = ctx.get_current_key()
-        
+
         transactions = list(self.transactions_state.get()) or []
-        
+
         current_tx = value
         transactions.append(current_tx)
-        
+
         transactions.sort(key=lambda x: x[0])
-        
+
         current_card_id = current_tx[2]
         current_timestamp = current_tx[0]
         current_lat, current_lon = current_tx[5], current_tx[6]
-        
+
         for prev_tx in transactions[:-1]:  # Exclude current transaction
             prev_card_id = prev_tx[2]
 
             if current_card_id == prev_card_id:
                 continue
-                
+
             prev_timestamp = prev_tx[0]
             prev_lat, prev_lon = prev_tx[5], prev_tx[6]
-            
+
             time_diff = abs(current_timestamp - prev_timestamp)
-            
+
             # Skip if no time difference to avoid division by zero
             if time_diff <= 0:
                 continue
-                
+
             dist_km = calculate_distance(current_lat, current_lon, prev_lat, prev_lon)
             time_diff_hr = time_diff / 3600.0
             speed = dist_km / time_diff_hr
-            
+
             print(f"user_id: {user_id} card_id_1: {prev_card_id} card_id_2: {current_card_id} speed: {speed:.2f} km/h")
-            
+
             if speed >= 900:
                 alarm = {
                     "alarm_time": current_timestamp,
                     "user_id": user_id,
-                    "card_id_1": prev_card_id,
-                    "card_id_2": current_card_id,
+                    "card_id": current_card_id,
                     "time_diff_seconds": time_diff,
                     "distance_km": round(dist_km, 2),
                     "estimated_speed_kmh": round(speed, 2),
@@ -326,9 +326,9 @@ class MultiCardDistance(KeyedProcessFunction):
 
         if len(transactions) > 5:
             transactions = transactions[-5:]
-        
+
         self.transactions_state.update(transactions)
-        
+
         return results
 
 
@@ -352,6 +352,7 @@ class ManyTransactionsNoPin(ProcessWindowFunction):
 
         return results
 
+
 def main():
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)
@@ -362,31 +363,13 @@ def main():
     }
 
     consumer = FlinkKafkaConsumer(
-        'Transactions',
+        KAFKA_TOPIC,
         SimpleStringSchema(),
         props
     )
 
-    working_alarms_producer = FlinkKafkaProducer(
-        topic='WorkingAlarms',
-        serialization_schema=SimpleStringSchema(),
-        producer_config={'bootstrap.servers': 'kafka:9092'}
-    )
-
-    impossible_travel_producer = FlinkKafkaProducer(
-        topic='ImpossibleTravel',
-        serialization_schema=SimpleStringSchema(),
-        producer_config={'bootstrap.servers': 'kafka:9092'}
-    )
-
-    multi_card_distance_producer = FlinkKafkaProducer(
-        topic='MultiCardImpossibleTravel',
-        serialization_schema=SimpleStringSchema(),
-        producer_config={'bootstrap.servers': 'kafka:9092'}
-    )
-
-    many_transactions_no_pin_producer = FlinkKafkaProducer(
-        topic='ManyTransactionsNoPin',
+    alarms_producer = FlinkKafkaProducer(
+        topic=KAFKA_ALARMS,
         serialization_schema=SimpleStringSchema(),
         producer_config={'bootstrap.servers': 'kafka:9092'}
     )
@@ -400,51 +383,51 @@ def main():
         .assign_timestamps_and_watermarks(watermark_strategy)
 
     negative_value_alarm = ds \
-    .filter(lambda x: x[1] < 0) \
-    .map(
-        lambda x: json.dumps({
-            'alarm_time': x[0],
-            'card_id': x[2],
-            'value': x[1],
-            'alarm_type': 'NegativeTransaction'
-        }),
-        output_type=Types.STRING()
-    )
+        .filter(lambda x: x[1] < 0) \
+        .map(
+            lambda x: json.dumps({
+                'alarm_time': x[0],
+                'card_id': x[2],
+                'value': x[1],
+                'alarm_type': 'NegativeTransaction'
+            }),
+            output_type=Types.STRING()
+        )
 
     transaction_above_10k_alarm = ds \
-    .filter(lambda x: x[1] >= 10000) \
-    .map(
-        lambda x: json.dumps({
-            'alarm_time': x[0],
-            'card_id': x[2],
-            'value': x[1],
-            'alarm_type': 'VeryHighValue'
-        }),
-        output_type=Types.STRING()
-    )
+        .filter(lambda x: x[1] >= 10000) \
+        .map(
+            lambda x: json.dumps({
+                'alarm_time': x[0],
+                'card_id': x[2],
+                'value': x[1],
+                'alarm_type': 'VeryHighValue'
+            }),
+            output_type=Types.STRING()
+        )
 
     ten_times_average_alarm = ds \
         .key_by(lambda x: x[2]) \
         .window(CountSlidingWindowAssigner.of(20, 10)) \
         .process(TenTimesTheAverage(), output_type=Types.STRING())
-    
+
     limit_reached_alarm = ds \
-    .filter(lambda x: x[4] <= 0.001) \
-    .map(
-        lambda x: json.dumps({
-            'alarm_time': x[0],
-            'card_id': x[2],
-            'value': x[1],
-            'card_limit': x[4],
-            'alarm_type': 'LimitExceeded'
-        }),
-        output_type=Types.STRING()
-    )
+        .filter(lambda x: x[4] <= 0.001) \
+        .map(
+            lambda x: json.dumps({
+                'alarm_time': x[0],
+                'card_id': x[2],
+                'value': x[1],
+                'card_limit': x[4],
+                'alarm_type': 'LimitExceeded'
+            }),
+            output_type=Types.STRING()
+        )
 
     burst_after_inactivity_alarm = ds \
         .key_by(lambda x: x[2]) \
         .process(BurstAfterInactivity(), output_type=Types.STRING())
-    
+
     close_transactions_no_pin_alarm = ds \
         .key_by(lambda x: x[2]) \
         .process(CloseTransactionsNoPin(), output_type=Types.STRING())
@@ -466,16 +449,16 @@ def main():
         .window(CountTumblingWindowAssigner.of(10)) \
         .process(ManyTransactionsNoPin(), output_type=Types.STRING())
 
-    negative_value_alarm.add_sink(working_alarms_producer)
-    transaction_above_10k_alarm.add_sink(working_alarms_producer)
-    ten_times_average_alarm.add_sink(working_alarms_producer)
-    limit_reached_alarm.add_sink(working_alarms_producer)
+    negative_value_alarm.add_sink(alarms_producer)
+    transaction_above_10k_alarm.add_sink(alarms_producer)
+    ten_times_average_alarm.add_sink(alarms_producer)
+    limit_reached_alarm.add_sink(alarms_producer)
     # burst_after_inactivity_alarm.add_sink(working_alarms_producer)
     # close_transactions_no_pin_alarm.add_sink(working_alarms_producer)
     # rapid_transactions_alarm.add_sink(working_alarms_producer)
-    impossible_travel_alarm.add_sink(impossible_travel_producer)
-    multi_card_distance_alarm.add_sink(multi_card_distance_producer)
-    many_transactions_no_pin_alarm.add_sink(many_transactions_no_pin_producer)
+    impossible_travel_alarm.add_sink(alarms_producer)
+    multi_card_distance_alarm.add_sink(alarms_producer)
+    many_transactions_no_pin_alarm.add_sink(alarms_producer)
     env.execute("Transaction Anomaly Detection")
 
 

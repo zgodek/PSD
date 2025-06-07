@@ -82,7 +82,7 @@ def initialize_data(num_users, num_cards, force=False):
 
         avg_value = random.uniform(10, 500)
         std_dev = avg_value * 0.2
-        card_limit = random.uniform(5000, 50000)
+        card_limit = random.uniform(5000, 500000)
 
         lat, lon = user_locations[user_id]
 
