@@ -349,7 +349,7 @@ class TransactionGenerator:
                 self.producer.send(KAFKA_TOPIC, pin_tx)
                 self.update_local_cache(card_id, pin_tx)
                 time.sleep(0.001)  # Small delay between sending
-            logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
+            #logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
 
             transaction["value"] = random.uniform(90, 100)
             transaction["timestamp"] = current_time  # Set to the latest time
@@ -389,7 +389,7 @@ class TransactionGenerator:
 
                     # If the time difference is less than the minimum travel time, it's an anomaly
                     if time_diff < min_travel_time:
-                        logger.info(f"Generated an anomalous transaction for user {user_id} at {transaction['timestamp']} (type: {anomaly_type})")
+                        logger.info(f"Generated an anomalous transaction for user {transaction['user_id']} with cards {transaction['card_id']} at {transaction['timestamp']} (type: {anomaly_type})")
                         return transaction
             return self.generate_anomaly_transaction(card_id)
         elif anomaly_type == "dormant_card_activity":

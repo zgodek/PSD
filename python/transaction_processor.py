@@ -5,7 +5,7 @@ import redis
 from pyflink.datastream import StreamExecutionEnvironment, KeyedProcessFunction
 from pyflink.datastream.connectors import FlinkKafkaConsumer, FlinkKafkaProducer
 from pyflink.datastream.functions import FlatMapFunction, ProcessWindowFunction
-from pyflink.datastream.state import ValueStateDescriptor, ListStateDescriptor
+from pyflink.datastream.state import ValueStateDescriptor, ListStateDescriptor, MapStateDescriptor
 from pyflink.datastream.window import TumblingEventTimeWindows, SlidingEventTimeWindows, CountTumblingWindowAssigner, CountSlidingWindowAssigner
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.typeinfo import Types
@@ -155,7 +155,7 @@ class BurstAfterInactivity(KeyedProcessFunction):
                     break
             if burst_count >= 2:
                 alarm = {
-                    "alarm_time": recent_timestamps[long_break_index+burst_count],
+                    "alarm_time": recent_timestamps[long_break_index],
                     "card_id": card_id,
                     "burst_start": recent_timestamps[long_break_index],
                     "transactions_in_burst": burst_count,
@@ -291,9 +291,9 @@ class MultiCardDistance(KeyedProcessFunction):
 
         for prev_tx in transactions[:-1]:  # Exclude current transaction
             prev_card_id = prev_tx[2]
-
             if current_card_id == prev_card_id:
                 continue
+
 
             prev_timestamp = prev_tx[0]
             prev_lat, prev_lon = prev_tx[5], prev_tx[6]
@@ -304,6 +304,7 @@ class MultiCardDistance(KeyedProcessFunction):
             if time_diff <= 0:
                 continue
 
+
             dist_km = calculate_distance(current_lat, current_lon, prev_lat, prev_lon)
             time_diff_hr = time_diff / 3600.0
             speed = dist_km / time_diff_hr
@@ -311,6 +312,7 @@ class MultiCardDistance(KeyedProcessFunction):
             print(f"user_id: {user_id} card_id_1: {prev_card_id} card_id_2: {current_card_id} speed: {speed:.2f} km/h")
 
             if speed >= 900:
+                print(f"user_id: {user_id} card_id_1: {prev_card_id} card_id_2: {current_card_id} speed: {speed:.2f} km/h")
                 alarm = {
                     "alarm_time": current_timestamp,
                     "user_id": user_id,
@@ -326,6 +328,7 @@ class MultiCardDistance(KeyedProcessFunction):
 
         if len(transactions) > 5:
             transactions = transactions[-5:]
+
 
         self.transactions_state.update(transactions)
 

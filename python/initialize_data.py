@@ -121,7 +121,7 @@ def initialize_data(num_users, num_cards, force=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Initialize credit card transaction data in Redis')
     parser.add_argument('--users', type=int, default=2, help='Number of users to create')
-    parser.add_argument('--cards', type=int, default=4, help='Number of cards to create')
+    parser.add_argument('--cards', type=int, default=5, help='Number of cards to create')
     parser.add_argument('--force', action='store_true', help='Force reinitialization even if data exists')
     args = parser.parse_args()
 
