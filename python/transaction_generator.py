@@ -49,9 +49,9 @@ ANOMALY_PROBABILITY = 0.02  # 5% chance of an anomaly
 ANOMALY_TYPES = {
     # "large_distance": 0.1,           # Large distance from previous transaction
     "high_value": 0.2,               # Value 10x higher than average
-    "very_high_value": 0.1,          # Value > 10000 PLN
+    "very_high_value": 0.2,          # Value > 10000 PLN
     "rapid_transactions": 0.1,       # Transactions < 10s apart
-    "negative_transaction": 0.15,    # Negative transaction value
+    "negative_transaction": 0.05,    # Negative transaction value
     "impossible_travel": 0.1,        # Transactions too far apart given time difference
     # "limit_exceeded": 0.1,           # Exceeding card limit
     "pin_avoidance": 0.1,            # Multiple transactions just below PIN threshold (90-100 PLN)
@@ -475,7 +475,7 @@ class TransactionGenerator:
                 # else:
                 # logger.debug(f"Generated normal transaction for card {transaction['card_id']}")
 
-                time.sleep(0.01)
+                time.sleep(0.1)
 
         except Exception as e:
             logger.error(f"Error in transaction generator: {e}")

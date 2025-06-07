@@ -450,8 +450,8 @@ def main():
         .window(CountTumblingWindowAssigner.of(10)) \
         .process(ManyTransactionsNoPin(), output_type=Types.STRING())
 
-    negative_above10k_limit_alarm.add_sink(alarms_producer)
     ten_times_average_alarm.add_sink(alarms_producer)
+    negative_above10k_limit_alarm.add_sink(alarms_producer)
     burst_after_inactivity_alarm.add_sink(alarms_producer)
     close_transactions_no_pin_alarm.add_sink(alarms_producer)
     rapid_transactions_alarm.add_sink(alarms_producer)
