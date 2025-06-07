@@ -45,13 +45,13 @@ COMMON_LOCATIONS = [
 ]
 
 # Anomaly probabilities
-ANOMALY_PROBABILITY = 0.05  # 5% chance of an anomaly
+ANOMALY_PROBABILITY = 0.02  # 5% chance of an anomaly
 ANOMALY_TYPES = {
-    "large_distance": 0.1,           # Large distance from previous transaction
+    # "large_distance": 0.1,           # Large distance from previous transaction
     "high_value": 0.2,               # Value 10x higher than average
     "very_high_value": 0.1,          # Value > 10000 PLN
     "rapid_transactions": 0.1,       # Transactions < 10s apart
-    "negative_transaction": 0.05,    # Negative transaction value
+    "negative_transaction": 0.15,    # Negative transaction value
     "impossible_travel": 0.1,        # Transactions too far apart given time difference
     # "limit_exceeded": 0.1,           # Exceeding card limit
     "pin_avoidance": 0.1,            # Multiple transactions just below PIN threshold (90-100 PLN)
@@ -187,24 +187,18 @@ class TransactionGenerator:
                 return random.uniform(*LAT_BOUNDS), random.uniform(*LON_BOUNDS)
         else:
             # For normal transactions, we want to stay close to the last location
-            # 95% chance to stay in the same general area
-            if random.random() < 0.95:
-                # Small movement (within ~10km)
-                lat_variation = random.normalvariate(0, 0.05)  # ~5km in latitude
-                lon_variation = random.normalvariate(0, 0.05)  # ~5km in longitude
+            # Small movement (within ~10km)
+            lat_variation = random.normalvariate(0, 0.05)  # ~5km in latitude
+            lon_variation = random.normalvariate(0, 0.05)  # ~5km in longitude
 
-                new_lat = last_lat + lat_variation
-                new_lon = last_lon + lon_variation
+            new_lat = last_lat + lat_variation
+            new_lon = last_lon + lon_variation
 
-                # Ensure within world bounds
-                new_lat = max(LAT_BOUNDS[0], min(new_lat, LAT_BOUNDS[1]))
-                new_lon = max(LON_BOUNDS[0], min(new_lon, LON_BOUNDS[1]))
+            # Ensure within world bounds
+            new_lat = max(LAT_BOUNDS[0], min(new_lat, LAT_BOUNDS[1]))
+            new_lon = max(LON_BOUNDS[0], min(new_lon, LON_BOUNDS[1]))
 
-                return new_lat, new_lon
-            else:
-                # 5% chance to move to a common location (e.g., travel)
-                location = random.choice(COMMON_LOCATIONS)
-                return location["lat"], location["lon"]
+            return new_lat, new_lon
 
     def generate_normal_transaction(self, card_id: int) -> Dict:
         """Generate a normal transaction for a card"""
@@ -349,7 +343,6 @@ class TransactionGenerator:
                 self.producer.send(KAFKA_TOPIC, pin_tx)
                 self.update_local_cache(card_id, pin_tx)
                 time.sleep(0.001)  # Small delay between sending
-            #logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
 
             transaction["value"] = random.uniform(90, 100)
             transaction["timestamp"] = current_time  # Set to the latest time
@@ -409,27 +402,22 @@ class TransactionGenerator:
             if card_id in self.inactive_cards:
                 self.inactive_cards.remove(card_id)
             transaction["timestamp"] = current_time  # Set to the latest time
-        # if anomaly_type == "impossible_travel":
-        #     logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
-        # speed = self.calculate_distance(transaction['latitude'], transaction['longitude'], card['last_lat'], card['last_lon'])/(transaction['timestamp']-last_transaction_time)
-        # if speed >= 900:
-        #     logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
-        # if anomaly_type == "dormant_card_activity":
-        #     logger.info(f"Generated an anomalous transaction for card {card_id} at {transaction['timestamp']} (type: {anomaly_type})")
         return transaction
 
     def generate_transaction(self):
         """Generate a single transaction (normal or anomalous)"""
         # Select a random card
         card_id = random.randint(1, len(self.cards))
+        if self.cards[card_id]["available_limit"] < 0:
+            return self.generate_transaction()
 
         # Decide if this will be an anomalous transaction
         is_anomaly = random.random() < ANOMALY_PROBABILITY
 
         if is_anomaly:
             transaction = self.generate_anomaly_transaction(card_id)
-            if transaction["anomaly_type"] == "multi_card_distance":
-                self.update_local_cache(card_id, transaction)
+            if transaction["anomaly_type"] == "multi_card_distance" or transaction["anomaly_type"] == "impossible_travel":
+                #self.update_local_cache(card_id, transaction)
                 self.producer.send(KAFKA_TOPIC, transaction)
                 transaction = self.generate_normal_transaction(card_id)
                 return transaction
@@ -487,7 +475,7 @@ class TransactionGenerator:
                 # else:
                 # logger.debug(f"Generated normal transaction for card {transaction['card_id']}")
 
-                time.sleep(0.1)
+                time.sleep(0.01)
 
         except Exception as e:
             logger.error(f"Error in transaction generator: {e}")

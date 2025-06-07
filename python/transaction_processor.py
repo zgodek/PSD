@@ -309,14 +309,17 @@ class MultiCardDistance(KeyedProcessFunction):
             time_diff_hr = time_diff / 3600.0
             speed = dist_km / time_diff_hr
 
-            print(f"user_id: {user_id} card_id_1: {prev_card_id} card_id_2: {current_card_id} speed: {speed:.2f} km/h")
-
             if speed >= 900:
                 print(f"user_id: {user_id} card_id_1: {prev_card_id} card_id_2: {current_card_id} speed: {speed:.2f} km/h")
                 alarm = {
                     "alarm_time": current_timestamp,
                     "user_id": user_id,
                     "card_id": current_card_id,
+                    "card_id_2": prev_card_id,
+                    "lat1": current_lat,
+                    "lat2": prev_lat,
+                    "lon1": current_lon,
+                    "lon2": prev_lon,
                     "time_diff_seconds": time_diff,
                     "distance_km": round(dist_km, 2),
                     "estimated_speed_kmh": round(speed, 2),
@@ -356,6 +359,34 @@ class ManyTransactionsNoPin(ProcessWindowFunction):
         return results
 
 
+class Negative_Above10k_Limit(KeyedProcessFunction):
+    def process_element(self, value, ctx):
+        results = []
+        if value[1] < 0:
+            results.append(json.dumps({
+                'alarm_time': value[0],
+                'card_id': value[2],
+                'value': value[1],
+                'alarm_type': 'NegativeTransaction'
+            }))
+        elif value[1] >= 10000:
+            results.append(json.dumps({
+                'alarm_time': value[0],
+                'card_id': value[2],
+                'value': value[1],
+                'alarm_type': 'VeryHighValue'
+            }))
+        if value[4] <= 0.001:
+            results.append(json.dumps({
+                'alarm_time': value[0],
+                'card_id': value[2],
+                'value': value[1],
+                'card_limit': value[4],
+                'alarm_type': 'LimitExceeded'
+            }))
+        return results
+
+
 def main():
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)
@@ -385,47 +416,14 @@ def main():
         .flat_map(ParseTransactionList(), output_type=Types.TUPLE([Types.DOUBLE(), Types.DOUBLE(), Types.INT(), Types.INT(), Types.DOUBLE(), Types.DOUBLE(), Types.DOUBLE()])) \
         .assign_timestamps_and_watermarks(watermark_strategy)
 
-    negative_value_alarm = ds \
-        .filter(lambda x: x[1] < 0) \
-        .map(
-            lambda x: json.dumps({
-                'alarm_time': x[0],
-                'card_id': x[2],
-                'value': x[1],
-                'alarm_type': 'NegativeTransaction'
-            }),
-            output_type=Types.STRING()
-        )
-
-    transaction_above_10k_alarm = ds \
-        .filter(lambda x: x[1] >= 10000) \
-        .map(
-            lambda x: json.dumps({
-                'alarm_time': x[0],
-                'card_id': x[2],
-                'value': x[1],
-                'alarm_type': 'VeryHighValue'
-            }),
-            output_type=Types.STRING()
-        )
+    negative_above10k_limit_alarm = ds \
+        .key_by(lambda x: x[2]) \
+        .process(Negative_Above10k_Limit(), output_type=Types.STRING())
 
     ten_times_average_alarm = ds \
         .key_by(lambda x: x[2]) \
         .window(CountSlidingWindowAssigner.of(20, 10)) \
         .process(TenTimesTheAverage(), output_type=Types.STRING())
-
-    limit_reached_alarm = ds \
-        .filter(lambda x: x[4] <= 0.001) \
-        .map(
-            lambda x: json.dumps({
-                'alarm_time': x[0],
-                'card_id': x[2],
-                'value': x[1],
-                'card_limit': x[4],
-                'alarm_type': 'LimitExceeded'
-            }),
-            output_type=Types.STRING()
-        )
 
     burst_after_inactivity_alarm = ds \
         .key_by(lambda x: x[2]) \
@@ -452,13 +450,11 @@ def main():
         .window(CountTumblingWindowAssigner.of(10)) \
         .process(ManyTransactionsNoPin(), output_type=Types.STRING())
 
-    negative_value_alarm.add_sink(alarms_producer)
-    transaction_above_10k_alarm.add_sink(alarms_producer)
+    negative_above10k_limit_alarm.add_sink(alarms_producer)
     ten_times_average_alarm.add_sink(alarms_producer)
-    limit_reached_alarm.add_sink(alarms_producer)
-    # burst_after_inactivity_alarm.add_sink(working_alarms_producer)
-    # close_transactions_no_pin_alarm.add_sink(working_alarms_producer)
-    # rapid_transactions_alarm.add_sink(working_alarms_producer)
+    burst_after_inactivity_alarm.add_sink(alarms_producer)
+    close_transactions_no_pin_alarm.add_sink(alarms_producer)
+    rapid_transactions_alarm.add_sink(alarms_producer)
     impossible_travel_alarm.add_sink(alarms_producer)
     multi_card_distance_alarm.add_sink(alarms_producer)
     many_transactions_no_pin_alarm.add_sink(alarms_producer)
